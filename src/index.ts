@@ -127,6 +127,24 @@ function sourceByKey(key: string) {
   );
 }
 
+const CITY_COORDINATES = [
+  { name: 'Antananarivo', lat: -18.8792, lon: 47.5079 },
+  { name: 'Toamasina', lat: -18.1492, lon: 49.4023 },
+  { name: 'Antsirabe', lat: -19.8659, lon: 47.0333 },
+  { name: 'Mahajanga', lat: -15.7167, lon: 46.3167 },
+  { name: 'Fianarantsoa', lat: -21.4536, lon: 47.0857 },
+  { name: 'Toliara', lat: -23.35, lon: 43.6667 },
+  { name: 'Antsiranana', lat: -12.2787, lon: 49.2917 },
+  { name: 'Sambava', lat: -14.2667, lon: 50.1667 },
+  { name: 'Manakara', lat: -22.1333, lon: 48.0167 },
+  { name: 'Morondava', lat: -20.2833, lon: 44.2833 },
+] as const;
+
+function findCity(query: string) {
+  const normalized = query.toLowerCase();
+  return CITY_COORDINATES.find((city) => city.name.toLowerCase().includes(normalized));
+}
+
 const server = new McpServer({
   name: CONFIG.name,
   version: '0.1.0',
@@ -268,6 +286,108 @@ server.tool(
       ? 'These are lightweight reference hints, not a complete authoritative dataset.'
       : 'No local reference list is bundled yet. Use the source and dataset search tools.',
   })
+);
+
+server.tool(
+  'madagascar_search_hdx_datasets',
+  'Search HDX / Humanitarian Data Exchange for Madagascar datasets using the CKAN API.',
+  {
+    query: z.string().default('Madagascar').describe('HDX search query.'),
+    rows: z.number().int().min(1).max(50).default(10).describe('Number of datasets to return.'),
+  },
+  async ({ query, rows }) => {
+    try {
+      const url = new URL('https://data.humdata.org/api/3/action/package_search');
+      url.searchParams.set('q', query);
+      url.searchParams.set('rows', String(rows));
+      const data = await fetchJson<{ result?: { count?: number; results?: Array<Record<string, unknown>> } }>(url.toString());
+      const results = data.result?.results ?? [];
+      return jsonResult({
+        query,
+        total: data.result?.count,
+        datasets: results.map((dataset) => ({
+          id: dataset.id,
+          name: dataset.name,
+          title: dataset.title,
+          organization: dataset.organization && typeof dataset.organization === 'object'
+            ? (dataset.organization as Record<string, unknown>).title
+            : undefined,
+          url: `https://data.humdata.org/dataset/${dataset.name}`,
+          metadata_modified: dataset.metadata_modified,
+          resources_count: Array.isArray(dataset.resources) ? dataset.resources.length : undefined,
+        })),
+      });
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : 'Failed to search HDX datasets');
+    }
+  }
+);
+
+server.tool(
+  'madagascar_get_gdacs_alerts',
+  'Fetch GDACS RSS and return recent disaster alert entries mentioning Madagascar or tropical cyclones.',
+  {
+    query: z.string().default('Madagascar').describe('Text filter applied to GDACS RSS item title/description.'),
+    limit: z.number().int().min(1).max(30).default(10).describe('Max alerts to return.'),
+  },
+  async ({ query, limit }) => {
+    try {
+      const xml = await fetchText('https://www.gdacs.org/xml/rss.xml');
+      const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((match) => match[1]);
+      const normalized = query.toLowerCase();
+      const alerts = items
+        .map((item) => ({
+          title: htmlToText(item.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? ''),
+          link: htmlToText(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] ?? ''),
+          published_at: htmlToText(item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] ?? ''),
+          description: htmlToText(item.match(/<description>([\s\S]*?)<\/description>/)?.[1] ?? ''),
+        }))
+        .filter((item) => `${item.title} ${item.description}`.toLowerCase().includes(normalized))
+        .slice(0, limit);
+      return jsonResult({
+        source: 'https://www.gdacs.org/xml/rss.xml',
+        query,
+        count: alerts.length,
+        alerts,
+      });
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : 'Failed to fetch GDACS alerts');
+    }
+  }
+);
+
+server.tool(
+  'madagascar_get_weather',
+  'Fetch current weather from Open-Meteo for a Madagascar reference city or explicit coordinates.',
+  {
+    city: z.string().optional().describe('Known city: Antananarivo, Toamasina, Antsirabe, Mahajanga, Fianarantsoa, Toliara, Antsiranana, Sambava, Manakara, Morondava.'),
+    lat: z.number().optional().describe('Latitude if city is omitted.'),
+    lon: z.number().optional().describe('Longitude if city is omitted.'),
+  },
+  async ({ city, lat, lon }) => {
+    try {
+      const resolved = city ? findCity(city) : undefined;
+      const latitude = resolved?.lat ?? lat;
+      const longitude = resolved?.lon ?? lon;
+      if (latitude === undefined || longitude === undefined) {
+        return errorResult('Provide either a known city or both lat/lon.');
+      }
+      const url = new URL('https://api.open-meteo.com/v1/forecast');
+      url.searchParams.set('latitude', String(latitude));
+      url.searchParams.set('longitude', String(longitude));
+      url.searchParams.set('current', 'temperature_2m,relative_humidity_2m,precipitation,rain,wind_speed_10m,wind_direction_10m');
+      url.searchParams.set('timezone', 'Indian/Antananarivo');
+      const data = await fetchJson<Record<string, unknown>>(url.toString());
+      return jsonResult({
+        location: resolved ?? { lat: latitude, lon: longitude },
+        source: url.toString(),
+        current: data.current,
+        units: data.current_units,
+      });
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : 'Failed to fetch Madagascar weather');
+    }
+  }
 );
 
 async function main(): Promise<void> {

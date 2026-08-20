@@ -14,6 +14,9 @@ Madagascar-focused source discovery for humanitarian data, weather/cyclone conte
 - `madagascar_fetch_source_excerpt`
 - `madagascar_explain_scope`
 - `madagascar_list_reference_items`
+- `madagascar_search_hdx_datasets`
+- `madagascar_get_gdacs_alerts`
+- `madagascar_get_weather`
 
 ## Install
 
