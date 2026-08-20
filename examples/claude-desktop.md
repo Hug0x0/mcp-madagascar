@@ -5,7 +5,7 @@
   "mcpServers": {
     "madagascar": {
       "command": "npx",
-      "args": ["mcp-madagascar"]
+      "args": ["@hug0x0/mcp-madagascar"]
     }
   }
 }
