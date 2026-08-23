@@ -145,6 +145,20 @@ function findCity(query: string) {
   return CITY_COORDINATES.find((city) => city.name.toLowerCase().includes(normalized));
 }
 
+function resolveMadagascarLocation(city?: string, lat?: number, lon?: number) {
+  const resolved = city ? findCity(city) : undefined;
+  const latitude = resolved?.lat ?? lat;
+  const longitude = resolved?.lon ?? lon;
+  if (latitude === undefined || longitude === undefined) {
+    return undefined;
+  }
+  return {
+    location: resolved ?? { lat: latitude, lon: longitude },
+    latitude,
+    longitude,
+  };
+}
+
 const server = new McpServer({
   name: CONFIG.name,
   version: '0.1.0',
@@ -366,26 +380,59 @@ server.tool(
   },
   async ({ city, lat, lon }) => {
     try {
-      const resolved = city ? findCity(city) : undefined;
-      const latitude = resolved?.lat ?? lat;
-      const longitude = resolved?.lon ?? lon;
-      if (latitude === undefined || longitude === undefined) {
+      const resolved = resolveMadagascarLocation(city, lat, lon);
+      if (!resolved) {
         return errorResult('Provide either a known city or both lat/lon.');
       }
       const url = new URL('https://api.open-meteo.com/v1/forecast');
-      url.searchParams.set('latitude', String(latitude));
-      url.searchParams.set('longitude', String(longitude));
+      url.searchParams.set('latitude', String(resolved.latitude));
+      url.searchParams.set('longitude', String(resolved.longitude));
       url.searchParams.set('current', 'temperature_2m,relative_humidity_2m,precipitation,rain,wind_speed_10m,wind_direction_10m');
       url.searchParams.set('timezone', 'Indian/Antananarivo');
       const data = await fetchJson<Record<string, unknown>>(url.toString());
       return jsonResult({
-        location: resolved ?? { lat: latitude, lon: longitude },
+        location: resolved.location,
         source: url.toString(),
         current: data.current,
         units: data.current_units,
       });
     } catch (error) {
       return errorResult(error instanceof Error ? error.message : 'Failed to fetch Madagascar weather');
+    }
+  }
+);
+
+server.tool(
+  'madagascar_get_weather_forecast',
+  'Fetch a short daily weather forecast from Open-Meteo for a Madagascar reference city or explicit coordinates.',
+  {
+    city: z.string().optional().describe('Known city: Antananarivo, Toamasina, Antsirabe, Mahajanga, Fianarantsoa, Toliara, Antsiranana, Sambava, Manakara, Morondava.'),
+    lat: z.number().optional().describe('Latitude if city is omitted.'),
+    lon: z.number().optional().describe('Longitude if city is omitted.'),
+    forecast_days: z.number().int().min(1).max(7).default(3).describe('Number of forecast days to return.'),
+  },
+  async ({ city, lat, lon, forecast_days }) => {
+    try {
+      const resolved = resolveMadagascarLocation(city, lat, lon);
+      if (!resolved) {
+        return errorResult('Provide either a known city or both lat/lon.');
+      }
+      const url = new URL('https://api.open-meteo.com/v1/forecast');
+      url.searchParams.set('latitude', String(resolved.latitude));
+      url.searchParams.set('longitude', String(resolved.longitude));
+      url.searchParams.set('daily', 'temperature_2m_max,temperature_2m_min,precipitation_sum,rain_sum,wind_speed_10m_max,wind_gusts_10m_max');
+      url.searchParams.set('forecast_days', String(forecast_days));
+      url.searchParams.set('timezone', 'Indian/Antananarivo');
+      const data = await fetchJson<Record<string, unknown>>(url.toString());
+      return jsonResult({
+        location: resolved.location,
+        forecast_days,
+        source: url.toString(),
+        daily: data.daily,
+        units: data.daily_units,
+      });
+    } catch (error) {
+      return errorResult(error instanceof Error ? error.message : 'Failed to fetch Madagascar weather forecast');
     }
   }
 );
